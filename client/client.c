@@ -51,8 +51,18 @@ static int send_all(int fd, const char *buffer, size_t length) {
     return 0;
 }
 
-/* Receive one newline-terminated response. */
+/*
+ * Receive one newline-terminated response.
+ * Returns:
+ *   1  on success
+ *   0  on clean EOF
+ *  -1  on socket error
+ *  -2  if response exceeded buffer size (line drained until '\n')
+ */
 static int recv_line(int fd, char *buffer, size_t size) {
+    if (!buffer || size < 2)
+        return -1;
+
     size_t used = 0;
 
     while (used < size - 1) {
@@ -71,15 +81,35 @@ static int recv_line(int fd, char *buffer, size_t size) {
             return -1;
         }
 
-        if (c == '\n')
-            break;
+        if (c == '\n') {
+            buffer[used] = '\0';
+            return 1;
+        }
 
-        buffer[used++] = c;
+        if (c != '\r')
+            buffer[used++] = c;
     }
 
+    /* Buffer filled before '\n': null-terminate and drain remainder of line. */
     buffer[used] = '\0';
-    return 1;
+
+    while (1) {
+        char c;
+        ssize_t received = recv(fd, &c, 1, 0);
+
+        if (received < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+
+        if (received == 0 || c == '\n')
+            break;
+    }
+
+    return -2;
 }
+
 
 /* Percent-encode protocol fields. */
 static int encode_field(
@@ -178,6 +208,11 @@ static void display_mailbox_table(
     while (1) {
         int result = recv_line(sockfd, response, sizeof(response));
 
+        if (result == -2) {
+            printf("Warning: Skipping oversized mailbox entry.\n");
+            continue;
+        }
+        
         if (result <= 0) {
             printf("Server disconnected while reading mailbox.\n");
             break;
@@ -295,6 +330,11 @@ static int execute_command(
 
     int result = recv_line(sockfd, response, sizeof(response));
 
+    if (result == -2) {
+        printf("Error: Server response exceeded maximum buffer size.\n");
+        return -1;
+    }
+
     if (result <= 0) {
         printf("Server disconnected.\n");
         return -1;
@@ -338,6 +378,11 @@ static int execute_command(
         /* Handle other multiline responses if needed. */
         while (1) {
             result = recv_line(sockfd, response, sizeof(response));
+            
+            if (result == -2) {
+                printf("Error: Server response line too long.\n");
+                continue;
+            }
 
             if (result <= 0) {
                 printf("Server disconnected.\n");
@@ -521,13 +566,28 @@ static void read_email(int sockfd) {
 
 /* Logout. */
 static void logout_user(int sockfd) {
+    char confirm[16];
     char response[BUFFER_SIZE];
+
+    if (read_input("Are you sure you want to logout? (y/n): ",
+                   confirm, sizeof(confirm)))
+        return;
+
+    if (strcmp(confirm, "y") != 0 &&
+        strcmp(confirm, "Y") != 0 &&
+        strcasecmp(confirm, "yes") != 0) {
+        printf("Logout cancelled.\n");
+        return;
+    }
 
     if (execute_command(
             sockfd, "LOGOUT", 0, response, sizeof(response)) == 0) {
-        logged_in = 0;
+        if (strcmp(response, "OK|LOGGED_OUT") == 0) {
+            logged_in = 0;
+        }
     }
 }
+
 
 /* Main menu shown before login. */
 static void authentication_menu(int sockfd) {
@@ -667,9 +727,12 @@ int main(int argc, char *argv[]) {
 
             if (logged_in) {
                 /* Exit selected while still logged in. */
-                logout_user(sockfd);
+                char response[BUFFER_SIZE];
+                execute_command(sockfd, "QUIT", 0, response, sizeof(response));
+                logged_in = 0;
                 break;
             }
+
         }
     }
 
