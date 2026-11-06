@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
+#include <time.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -169,10 +170,10 @@ static void display_mailbox_table(
 
     printf("\n%s\n", mailbox);
 
-    printf("+------+----------------------+----------+------------------------------+\n");
-    printf("| ID   | %-20s | Status   | Subject                      |\n",
+    printf("+------+----------------------+---------------------+----------+------------------------------+\n");
+    printf("| ID   | %-20s | Date/Time           | Status   | Subject                      |\n",
            person_column);
-    printf("+------+----------------------+----------+------------------------------+\n");
+    printf("+------+----------------------+---------------------+----------+------------------------------+\n");
 
     while (1) {
         int result = recv_line(sockfd, response, sizeof(response));
@@ -193,19 +194,29 @@ static void display_mailbox_table(
             continue;
 
         char *id = fields[1];
+        time_t raw_time = (time_t)atoll(fields[2]);
+        char time_str[32];
+        struct tm *tm_info = localtime(&raw_time);
+        if (tm_info) {
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", tm_info);
+        } else {
+            snprintf(time_str, sizeof(time_str), "%s", fields[2]);
+        }
+
         char *person = fields[3];
         char *read_status = fields[4];
         char decoded_subject[INPUT_SIZE];
         decode_field(fields[5], decoded_subject, sizeof(decoded_subject));
 
-        printf("| %-4.4s | %-20.20s | %-8.8s | %-28.28s |\n",
+        printf("| %-4.4s | %-20.20s | %-19.19s | %-8.8s | %-28.28s |\n",
                id,
                person,
+               time_str,
                strcmp(read_status, "1") == 0 ? "Read" : "Unread",
                decoded_subject);
     }
 
-    printf("+------+----------------------+----------+------------------------------+\n\n");
+    printf("+------+----------------------+---------------------+----------+------------------------------+\n\n");
 }
 
 static void display_read_message(char *response) {
@@ -220,6 +231,15 @@ static void display_read_message(char *response) {
     char *sender = fields[4];
     char *recipient = fields[5];
 
+    time_t raw_time = (time_t)atoll(timestamp);
+    char time_str[64];
+    struct tm *tm_info = localtime(&raw_time);
+    if (tm_info) {
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+    } else {
+        snprintf(time_str, sizeof(time_str), "%s", timestamp);
+    }
+
     char decoded_subject[INPUT_SIZE];
     char decoded_body[BUFFER_SIZE];
     decode_field(fields[6], decoded_subject, sizeof(decoded_subject));
@@ -231,7 +251,7 @@ static void display_read_message(char *response) {
     printf("============================================================\n");
 
     printf("Message ID : %s\n", id);
-    printf("Date       : %s\n", timestamp);
+    printf("Date       : %s\n", time_str);
     printf("From       : %s\n", sender);
     printf("To         : %s\n", recipient);
     printf("Subject    : %s\n", decoded_subject);
@@ -452,7 +472,7 @@ static void compose_email(int sockfd) {
     char command[BUFFER_SIZE];
     char response[BUFFER_SIZE];
 
-    if (read_input("Recipient username: ", recipient,
+    if (read_input("Recipient username(s): ", recipient,
                    sizeof(recipient)) ||
         read_input("Subject: ", subject, sizeof(subject)) ||
         read_input("Message: ", body, sizeof(body)))

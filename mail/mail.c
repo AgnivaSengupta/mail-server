@@ -371,9 +371,12 @@ int mail_read_message(
         }
 
         if (current.id == message_id &&
-            strcmp(current.recipient, username) == 0) {
+            (strcmp(current.recipient, username) == 0 ||
+             strcmp(current.sender, username) == 0)) {
 
-            current.is_read = 1;
+            if (strcmp(current.recipient, username) == 0) {
+                current.is_read = 1;
+            }
             *message = current;
             found = 1;
 

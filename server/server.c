@@ -207,22 +207,57 @@ static void handle_send(int client_fd, const ProtocolMessage *msg) {
         return;
     }
 
-    const char *recipient = msg->fields[0];
+    const char *recipient_input = msg->fields[0];
     const char *subject = msg->fields[1];
     const char *body = msg->fields[2];
 
-    if (!auth_user_exists(recipient)) {
+    char rec_copy[PROTOCOL_FIELD_SIZE];
+    snprintf(rec_copy, sizeof(rec_copy), "%s", recipient_input);
+
+    char *recipients[64];
+    int rec_count = 0;
+
+    char *saveptr = NULL;
+    char *token = strtok_r(rec_copy, ",", &saveptr);
+    while (token != NULL) {
+        while (*token == ' ' || *token == '\t') token++;
+        char *end = token + strlen(token) - 1;
+        while (end > token && (*end == ' ' || *end == '\t')) {
+            *end = '\0';
+            end--;
+        }
+
+        if (token[0] != '\0') {
+            if (rec_count < 64) {
+                recipients[rec_count++] = token;
+            }
+        }
+        token = strtok_r(NULL, ",", &saveptr);
+    }
+
+    if (rec_count == 0) {
         send_response(client_fd, "ERROR|RECIPIENT_NOT_FOUND\n");
         return;
     }
 
-    unsigned long long message_id = 0;
-    if (mail_send(sender, recipient, subject, body, &message_id) != 0) {
-        send_response(client_fd, "ERROR|SEND_FAILED\n");
-        return;
+    for (int i = 0; i < rec_count; i++) {
+        if (!auth_user_exists(recipients[i])) {
+            send_response(client_fd, "ERROR|RECIPIENT_NOT_FOUND\n");
+            return;
+        }
     }
 
-    send_response(client_fd, "OK|SENT|%llu\n", message_id);
+    unsigned long long first_message_id = 0;
+    for (int i = 0; i < rec_count; i++) {
+        unsigned long long message_id = 0;
+        if (mail_send(sender, recipients[i], subject, body, &message_id) != 0) {
+            send_response(client_fd, "ERROR|SEND_FAILED\n");
+            return;
+        }
+        if (i == 0) first_message_id = message_id;
+    }
+
+    send_response(client_fd, "OK|SENT|%llu\n", first_message_id);
 }
 
 static void handle_list(int client_fd, int is_inbox) {
